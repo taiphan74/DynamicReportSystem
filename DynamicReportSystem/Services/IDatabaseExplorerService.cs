@@ -6,6 +6,8 @@ namespace DynamicReportSystem.Services
 {
     public interface IDatabaseExplorerService
     {
+        ExplorerNode BuildExplorerTree();
+
         List<string> LoadTableNames();
 
         List<ColumnInfo> LoadColumns(string tableName);

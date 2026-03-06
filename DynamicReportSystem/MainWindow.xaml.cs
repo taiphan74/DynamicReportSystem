@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
 using System.Windows.Input;
 using DynamicReportSystem.Configuration;
+using DynamicReportSystem.Models;
 using DynamicReportSystem.Repositories;
 using DynamicReportSystem.Services;
 
@@ -14,7 +16,11 @@ namespace DynamicReportSystem
     public partial class MainWindow : Window
     {
         private readonly IDatabaseExplorerService? _databaseExplorerService;
-        private readonly HashSet<string> _loadedTableNames = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ISqlQueryBuilderService _sqlQueryBuilderService = new SqlQueryBuilderService();
+        private readonly Dictionary<string, List<ColumnInfo>> _tableColumns = new(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _allowedTables = new(StringComparer.OrdinalIgnoreCase);
+
+        private string? _selectedTableName;
 
         public MainWindow()
         {
@@ -39,10 +45,10 @@ namespace DynamicReportSystem
 
         private void Window_Loaded(object sender, RoutedEventArgs e)
         {
-            LoadTablesOnStartup();
+            LoadExplorerOnStartup();
         }
 
-        private void LoadTablesOnStartup()
+        private void LoadExplorerOnStartup()
         {
             if (_databaseExplorerService is null)
             {
@@ -51,70 +57,94 @@ namespace DynamicReportSystem
 
             try
             {
-                var tableNames = _databaseExplorerService.LoadTableNames();
+                var rootNode = _databaseExplorerService.BuildExplorerTree();
+                tvExplorer.ItemsSource = new List<ExplorerNode> { rootNode };
 
-                _loadedTableNames.Clear();
-                foreach (var tableName in tableNames)
+                _allowedTables.Clear();
+                _tableColumns.Clear();
+
+                foreach (var tableNode in rootNode.Children.Where(n => n.NodeType == ExplorerNodeType.Table))
                 {
-                    _loadedTableNames.Add(tableName);
+                    _allowedTables.Add(tableNode.Name);
+                    _tableColumns[tableNode.Name] = tableNode.Children
+                        .Where(c => c.NodeType == ExplorerNodeType.Column)
+                        .Select(c => new ColumnInfo { Name = c.Name, DataType = c.DataType ?? string.Empty })
+                        .ToList();
                 }
 
-                lstTables.ItemsSource = tableNames;
-                lstTables.SelectedIndex = tableNames.Count > 0 ? 0 : -1;
-
-                if (tableNames.Count == 0)
+                if (rootNode.Children.Count == 0)
                 {
                     MessageBox.Show("No tables found in the selected database.", "Information", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Cannot load table list.\nDetails: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Cannot load schema explorer.\nDetails: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
-        private void lstTables_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        private void tvExplorer_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
-            if (_databaseExplorerService is null)
-            {
-                MessageBox.Show("Data service is not initialized.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            if (lstTables.SelectedItem is not string selectedTable || string.IsNullOrWhiteSpace(selectedTable))
+            if (tvExplorer.SelectedItem is not ExplorerNode selectedNode)
             {
                 return;
             }
 
-            if (!_loadedTableNames.Contains(selectedTable))
+            if (selectedNode.NodeType != ExplorerNodeType.Table)
             {
-                MessageBox.Show("Invalid table selected. Please restart and load table list again.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 
-            LoadTablePreviewAndColumns(selectedTable);
+            _selectedTableName = selectedNode.Name;
+            txtSelectedTable.Text = $"Bảng đã chọn: {_selectedTableName}";
         }
 
-        private void LoadTablePreviewAndColumns(string tableName)
+        private void btnGenerateSql_Click(object sender, RoutedEventArgs e)
         {
-            if (_databaseExplorerService is null)
-            {
-                return;
-            }
-
             try
             {
-                var previewData = _databaseExplorerService.GetPreviewData(tableName);
-                var columns = _databaseExplorerService.LoadColumns(tableName);
+                if (string.IsNullOrWhiteSpace(_selectedTableName))
+                {
+                    MessageBox.Show("Please double-click a table in Schema Explorer first.", "Information", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
 
-                txtSelectedTable.Text = $"Preview dữ liệu: {tableName} (TOP 100)";
-                dgData.ItemsSource = previewData.DefaultView;
-                lstColumns.ItemsSource = columns;
+                var options = new QueryBuilderOptions
+                {
+                    SelectedTable = _selectedTableName,
+                    IncludeSelect = chkSelect.IsChecked == true,
+                    UseWhere = chkWhere.IsChecked == true,
+                    UseGroupBy = chkGroupBy.IsChecked == true,
+                    UseOrderBy = false,
+                    Top = 0
+                };
+
+                var allowedColumns = _tableColumns.TryGetValue(_selectedTableName, out var columns)
+                    ? columns.Select(c => c.Name).ToList()
+                    : new List<string>();
+
+                var result = _sqlQueryBuilderService.BuildSelectQuery(options, _allowedTables.ToList(), allowedColumns);
+                txtGeneratedSql.Text = result.Sql;
+
+                if (result.Warnings.Count > 0)
+                {
+                    MessageBox.Show(string.Join(Environment.NewLine, result.Warnings), "Builder Warnings", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Cannot load table preview for '{tableName}'.\nDetails: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Cannot generate SQL.\nDetails: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+        }
+
+        private void btnReset_Click(object sender, RoutedEventArgs e)
+        {
+            txtGeneratedSql.Clear();
+            chkSelect.IsChecked = true;
+            chkWhere.IsChecked = false;
+            chkGroupBy.IsChecked = false;
+            _selectedTableName = null;
+            txtSelectedTable.Text = "Bảng đã chọn: (chưa chọn)";
         }
     }
 }

@@ -21,6 +21,42 @@ namespace DynamicReportSystem.Services
             _tableDataRepository = tableDataRepository ?? throw new ArgumentNullException(nameof(tableDataRepository));
         }
 
+        public ExplorerNode BuildExplorerTree()
+        {
+            var root = new ExplorerNode
+            {
+                Name = "Tables",
+                NodeType = ExplorerNodeType.Root
+            };
+
+            var tableNames = LoadTableNames();
+            foreach (var tableName in tableNames)
+            {
+                var tableNode = new ExplorerNode
+                {
+                    Name = tableName,
+                    TableName = tableName,
+                    NodeType = ExplorerNodeType.Table
+                };
+
+                var columns = LoadColumns(tableName);
+                foreach (var column in columns)
+                {
+                    tableNode.Children.Add(new ExplorerNode
+                    {
+                        Name = column.Name,
+                        DataType = column.DataType,
+                        TableName = tableName,
+                        NodeType = ExplorerNodeType.Column
+                    });
+                }
+
+                root.Children.Add(tableNode);
+            }
+
+            return root;
+        }
+
         public List<string> LoadTableNames()
         {
             var tableNames = _schemaRepository
